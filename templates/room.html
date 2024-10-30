@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="py-4">
+    {% if admin_warning %}
+    <div class="alert alert-warning alert-dismissible fade show" role="alert">
+        <strong>Admin Notice!</strong> Do not share the current URL as it contains your admin token. Use the share button below to share the room with others.
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
+    {% endif %}
+
+    <div id="admin-controls" class="mb-4" style="display: none;">
+        <h3>Admin Controls</h3>
+        <div class="input-group mb-3">
+            <input type="text" id="video-url" class="form-control" placeholder="Enter MP4 video URL">
+            <button class="btn btn-primary" onclick="setVideo()">Set Video</button>
+        </div>
+    </div>
+    
+    <div id="video-container" class="ratio ratio-16x9 position-relative">
+        <video id="video-player" controls>
+            Your browser does not support the video element.
+        </video>
+        <div id="play-overlay" class="position-absolute top-0 start-0 w-100 h-100 d-none bg-dark bg-opacity-75 d-flex align-items-center justify-content-center" style="cursor: pointer;">
+            <i class="bi bi-play-circle-fill text-white" style="font-size: 5rem;"></i>
+        </div>
+    </div>
+    
+    <div class="mt-3">
+        <p>Room ID: <span class="text-info">{{ room_id }}</span></p>
+        <p>Share this URL to invite others:</p>
+        <div class="input-group">
+            <input type="text" class="form-control" id="room-url" readonly value="{{ share_url }}">
+            <button class="btn btn-secondary" onclick="copyUrl()">Copy</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+<script>
+    const socket = io();
+    const roomId = "{{ room_id }}";
+    const adminToken = new URLSearchParams(window.location.search).get('admintoken');
+    const video = document.getElementById('video-player');
+    const playOverlay = document.getElementById('play-overlay');
+    const isAdmin = {{ 'true' if is_admin else 'false' }};
+    let userInteracted = false;
+    let lastAdminState = {
+        currentTime: 0,
+        isPlaying: false
+    };
+
+    // Handle initial interaction
+    video.addEventListener('play', () => {
+        if (!userInteracted) {
+            userInteracted = true;
+        }
+    });
+
+    socket.emit('join', { 
+        room_id: roomId,
+        admin_token: adminToken
+    });
+    
+    socket.on('admin_status', (data) => {
+        if (data.is_admin) {
+            document.getElementById('admin-controls').style.display = 'block';
+        }
+    });
+    
+    socket.on('video_update', (data) => {
+        if (data.url && video.src !== data.url) {
+            video.src = data.url;
+            if (data.isPlaying && userInteracted) {
+                video.play();
+            }
+        }
+        
+        if (!isAdmin) {
+            lastAdminState = {
+                currentTime: data.currentTime,
+                isPlaying: data.isPlaying
+            };
+
+            // Only sync if the time difference is significant (> 5 seconds)
+            const timeDrift = Math.abs(video.currentTime - data.currentTime);
+            if (timeDrift > 5) {
+                video.currentTime = data.currentTime;
+            }
+
+            // Only force play/pause state
+            if (data.isPlaying && video.paused && userInteracted) {
+                video.play();
+            } else if (!data.isPlaying && !video.paused) {
+                video.pause();
+            }
+        }
+    });
+    
+    function setVideo() {
+        const url = document.getElementById('video-url').value;
+        if (url && isAdmin) {
+            socket.emit('update_video', {
+                room_id: roomId,
+                admin_token: adminToken,
+                url: url,
+                currentTime: 0,
+                isPlaying: false
+            });
+        }
+    }
+    
+    if (isAdmin) {
+        video.addEventListener('play', () => {
+            socket.emit('update_video', {
+                room_id: roomId,
+                admin_token: adminToken,
+                isPlaying: true,
+                currentTime: video.currentTime
+            });
+        });
+        
+        video.addEventListener('pause', () => {
+            socket.emit('update_video', {
+                room_id: roomId,
+                admin_token: adminToken,
+                isPlaying: false,
+                currentTime: video.currentTime
+            });
+        });
+        
+        video.addEventListener('seeked', () => {
+            socket.emit('update_video', {
+                room_id: roomId,
+                admin_token: adminToken,
+                currentTime: video.currentTime,
+                isPlaying: !video.paused
+            });
+        });
+
+        // Sync time every 5 seconds if playing
+        setInterval(() => {
+            if (!video.paused) {
+                socket.emit('update_video', {
+                    room_id: roomId,
+                    admin_token: adminToken,
+                    currentTime: video.currentTime,
+                    isPlaying: true
+                });
+            }
+        }, 5000);
+    }
+    
+    function copyUrl() {
+        const urlInput = document.getElementById('room-url');
+        urlInput.select();
+        document.execCommand('copy');
+    }
+</script>
+{% endblock %} 
